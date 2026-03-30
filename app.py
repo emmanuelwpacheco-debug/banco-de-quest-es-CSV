@@ -2,135 +2,114 @@ import streamlit as st
 import pandas as pd
 from docx import Document
 import re
-import io
 
 def extrair_dados_questoes(docx_file):
     try:
         doc = Document(docx_file)
-        questoes = []
-        paragrafos = [p.text for p in doc.paragraphs]
+        # Lemos todos os parágrafos ignorando os vazios
+        paragrafos = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
         conteudo = "\n".join(paragrafos)
         
-        # Divisão pelo link (marcador de início de questão)
-        # O padrão do Tec às vezes tem espaços ou variações, por isso o \s*
-        blocos = re.split(r'www\.tecconcursos\.com\.br/questoes/\d+', conteudo)
+        # --- DIVISÃO DAS QUESTÕES ---
+        # Tenta dividir pelo link do Tec (com ou sem http) OU por números seguidos de parênteses no início da linha
+        # Ex: 13), 22), etc.
+        blocos = re.split(r'(?:https?://)?www\.tecconcursos\.com\.br/questoes/\d+|(?:\n|^)\d+\)\s', conteudo)
         
+        # Se a divisão não funcionou, tenta dividir apenas pelo "Gabarito:" como última alternativa
         if len(blocos) <= 1:
-            st.error("Não encontrei links do 'tecconcursos' no documento. Verifique se o padrão mudou.")
-            return pd.DataFrame()
+            blocos = re.split(r'(?<=Gabarito: [A-E])\n', conteudo)
 
-        for bloco in blocos[1:]:
+        questoes = []
+        for bloco in blocos:
             linhas = [l.strip() for l in bloco.strip().split('\n') if l.strip()]
             if len(linhas) < 4: continue
 
-            # --- METADADOS (LINHA 1 E 2) ---
-            # Ex: FGV - Esp Leg (ALERJ)/ALERJ/Nível IV/Administração Geral/2026
-            meta_topo = linhas[0].split('/')
-            banca_cargo = meta_topo[0].split(' - ')
-            
-            banca = banca_cargo[0] if len(banca_cargo) > 0 else ""
-            cargo = banca_cargo[1] if len(banca_cargo) > 1 else ""
-            orgao = meta_topo[1] if len(meta_topo) > 1 else ""
-            ano = meta_topo[-1] if len(meta_topo) > 1 else ""
-
-            # Ex: Direito Constitucional - Mandado de Injunção
-            meta_assunto = linhas[1].split(' - ')
-            disciplina = meta_assunto[0] if len(meta_assunto) > 0 else ""
-            assunto = meta_assunto[1] if len(meta_assunto) > 1 else ""
-
-            # --- BUSCA DE ÍNDICES (ALTERNATIVAS E GABARITO) ---
+            # --- BUSCA DE GABARITO E ALTERNATIVAS (O CORAÇÃO DO PROBLEMA) ---
             idx_alternativas = []
             idx_gabarito = -1
             
             for i, linha in enumerate(linhas):
-                l_strip = linha.strip()
-                # Verifica a), b), c), d), e) ou Certo/Errado
-                if re.match(r'^[a-h]\)\s*', l_strip.lower()) or l_strip in ["Certo", "Errado"]:
+                l_lower = linha.lower()
+                # Padrão: a) ou Certo/Errado no início da linha
+                if re.match(r'^[a-h]\)\s+', l_lower) or l_lower in ["certo", "errado"]:
                     idx_alternativas.append(i)
-                if "Gabarito:" in linha:
+                if "gabarito:" in l_lower:
                     idx_gabarito = i
 
-            # Se não achou gabarito ou alternativas, pula essa questão para não travar
-            if not idx_alternativas or idx_gabarito == -1:
-                continue
+            # Só processa se achar o gabarito
+            if idx_gabarito == -1: continue
+
+            # Se não achou alternativas (ex: questão mal formatada), tenta extrair o que der
+            primeira_alt = idx_alternativas[0] if idx_alternativas else idx_gabarito
+
+            # --- METADADOS ---
+            # Tentamos pegar banca e ano das duas primeiras linhas
+            meta_linha = linhas[0] if len(linhas) > 0 else ""
+            ano_match = re.search(r'20\d{2}', meta_linha)
+            ano = ano_match.group(0) if ano_match else ""
+            
+            banca = meta_linha.split('-')[0].strip() if '-' in meta_linha else meta_linha[:15]
 
             # --- ENUNCIADO ---
-            # Pega da linha 2 até a primeira alternativa encontrada
-            enunciado = "\n".join(linhas[2:idx_alternativas[0]])
+            # O enunciado agora é tudo antes da primeira alternativa ou do Gabarito
+            enunciado = "\n".join(linhas[:primeira_alt])
+            # Remove as linhas de metadados do topo do enunciado (se sobrarem)
+            enunciado_limpo = "\n".join(enunciado.split('\n')[2:]).strip()
 
             # --- GABARITO ---
-            letra_correta = ""
-            match = re.search(r'Gabarito:\s*([A-E]|Certo|Errado|C|E)', linhas[idx_gabarito], re.IGNORECASE)
-            if match:
-                letra_correta = match.group(1).upper()
+            match_gab = re.search(r'Gabarito:\s*([A-E]|Certo|Errado|C|E)', linhas[idx_gabarito], re.IGNORECASE)
+            letra_correta = match_gab.group(1).upper() if match_gab else ""
 
             # --- ALTERNATIVAS ---
             alts_extraidas = []
-            for i in range(len(idx_alternativas)):
-                inicio = idx_alternativas[i]
-                fim = idx_alternativas[i+1] if i+1 < len(idx_alternativas) else idx_gabarito
-                texto_alt = "\n".join(linhas[inicio:fim]).strip()
-                alts_extraidas.append(texto_alt)
+            if idx_alternativas:
+                for i in range(len(idx_alternativas)):
+                    inicio = idx_alternativas[i]
+                    fim = idx_alternativas[i+1] if i+1 < len(idx_alternativas) else idx_gabarito
+                    alts_extraidas.append("\n".join(linhas[inicio:fim]).strip())
 
-            # --- MONTAGEM DA LINHA ---
-            row = {"Enunciado": enunciado}
+            # --- MONTAGEM NA ORDEM SOLICITADA ---
+            row = {"Enunciado": enunciado_limpo if enunciado_limpo else enunciado}
             
-            for i in range(1, 6): # Mapeia as 5 alternativas
-                texto_da_alt = alts_extraidas[i-1] if i <= len(alts_extraidas) else ""
-                check_correta = ""
-                
-                if texto_da_alt:
-                    # Lógica de correção
-                    letra_da_alt = texto_da_alt[0].upper() if ")" in texto_da_alt[:3] else ""
-                    
-                    is_correta = False
-                    if letra_da_alt and letra_da_alt == letra_correta: is_correta = True
-                    if texto_da_alt == "Certo" and letra_correta in ["C", "CERTO"]: is_correta = True
-                    if texto_da_alt == "Errado" and letra_correta in ["E", "ERRADO"]: is_correta = True
-                    
-                    if is_correta:
-                        check_correta = "CORRETA"
-
-                row[f"Alternativa {i}"] = texto_da_alt
-                row[f"Alt {i} Corr."] = check_correta
+            for i in range(1, 6):
+                texto_alt = alts_extraidas[i-1] if i <= len(alts_extraidas) else ""
+                corr = ""
+                if texto_alt:
+                    letra_alt = texto_alt[0].upper() if ")" in texto_alt[:3] else texto_alt
+                    if letra_alt == letra_correta or \
+                       (texto_alt == "Certo" and letra_correta in ["C", "CERTO"]) or \
+                       (texto_alt == "Errado" and letra_correta in ["E", "ERRADO"]):
+                        corr = "CORRETA"
+                row[f"Alternativa {i}"] = texto_alt
+                row[f"Alt {i} Corr."] = corr
 
             row.update({
-                "M1 (Banca)": banca, "M2 (Órgão)": orgao, "M3 (Cargo)": cargo,
-                "M4 (Ano)": ano, "M5 (Disc.)": disciplina, "M6 (Assunto)": assunto
+                "M1 (Banca)": banca, "M2 (Órgão)": "", "M3 (Cargo)": "",
+                "M4 (Ano)": ano, "M5 (Disc.)": "", "M6 (Assunto)": ""
             })
             questoes.append(row)
             
         return pd.DataFrame(questoes)
 
     except Exception as e:
-        st.error(f"Erro técnico no processamento: {e}")
+        st.error(f"Erro: {e}")
         return pd.DataFrame()
 
-# --- INTERFACE ---
-st.set_page_config(page_title="Extrator de Obras", layout="wide")
-st.title("🏗️ Extrator de Questões (Versão Debug)")
-
-arquivo = st.file_uploader("Suba o arquivo .docx", type=["docx"])
+# Interface simplificada
+st.title("🏗️ Extrator Flexível de Questões")
+arquivo = st.file_uploader("Suba o .docx", type=["docx"])
 
 if arquivo:
-    with st.spinner('Lendo arquivo...'):
-        df = extrair_dados_questoes(arquivo)
+    df = extrair_dados_questoes(arquivo)
+    if not df.empty:
+        # Garante a ordem exata das colunas
+        ordem = ["Enunciado", "Alternativa 1", "Alt 1 Corr.", "Alternativa 2", "Alt 2 Corr.", 
+                 "Alternativa 3", "Alt 3 Corr.", "Alternativa 4", "Alt 4 Corr.", "Alternativa 5", "Alt 5 Corr.",
+                 "M1 (Banca)", "M2 (Órgão)", "M3 (Cargo)", "M4 (Ano)", "M5 (Disc.)", "M6 (Assunto)"]
+        df = df.reindex(columns=ordem)
+        st.dataframe(df)
+        csv = df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 Baixar CSV", csv, "questoes.csv", "text/csv")
+    else:
+        st.warning("Nenhuma questão processada. O Gabarito está escrito como 'Gabarito: X'?")
         
-        if not df.empty:
-            # Reordenação de colunas
-            colunas = [
-                "Enunciado", "Alternativa 1", "Alt 1 Corr.", "Alternativa 2", "Alt 2 Corr.",
-                "Alternativa 3", "Alt 3 Corr.", "Alternativa 4", "Alt 4 Corr.", "Alternativa 5", "Alt 5 Corr.",
-                "M1 (Banca)", "M2 (Órgão)", "M3 (Cargo)", "M4 (Ano)", "M5 (Disc.)", "M6 (Assunto)"
-            ]
-            # Filtra apenas colunas que realmente existem no DF para evitar erro
-            colunas_existentes = [c for c in colunas if c in df.columns]
-            df = df[colunas_existentes]
-            
-            st.success(f"Concluído! {len(df)} questões prontas.")
-            st.dataframe(df)
-            
-            csv = df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 Baixar CSV", csv, "questoes.csv", "text/csv")
-        else:
-            st.warning("O arquivo foi lido, mas nenhuma questão foi identificada. Verifique se o padrão do texto no Word é o mesmo dos exemplos.")
