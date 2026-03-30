@@ -9,12 +9,21 @@ def extrair_dados_questoes(docx_file):
         paragrafos = [p.text for p in doc.paragraphs]
         conteudo = "\n".join(paragrafos)
         
+        # 1. MAPEAMENTO DE GABARITOS (Caso estejam no fim do doc)
+        dict_gabaritos = {}
+        if "Gabarito" in conteudo:
+            parte_final = conteudo.split("Gabarito")[-1]
+            matches_gab = re.findall(r'(\d+)\s*\)\s*([\w]+)', parte_final)
+            for num, resp in matches_gab:
+                dict_gabaritos[num] = resp.strip().upper()
+
+        # 2. DIVISÃO DAS QUESTÕES
         blocos = re.split(r'(?:https?://)?www\.tecconcursos\.com\.br/questoes/\d+', conteudo)
         
         questoes = []
         for bloco in blocos[1:]:
             linhas = [l.strip() for l in bloco.strip().split('\n') if l.strip()]
-            if len(linhas) < 5: continue
+            if len(linhas) < 4: continue
 
             # --- METADADOS ---
             meta_topo = linhas[0].split('/')
@@ -23,13 +32,18 @@ def extrair_dados_questoes(docx_file):
             cargo = banca_cargo[1] if len(banca_cargo) > 1 else ""
             orgao = meta_topo[1] if len(meta_topo) > 1 else ""
             ano = meta_topo[-1] if len(meta_topo) > 1 else ""
+            
             meta_assunto = linhas[1].split(' - ')
             disciplina = meta_assunto[0] if len(meta_assunto) > 0 else ""
             assunto = meta_assunto[1] if len(meta_assunto) > 1 else ""
 
+            # Identificar número da questão para o dicionário de gabaritos
+            num_match = re.search(r'^(\d+)\)', "\n".join(linhas[:5]))
+            num_q = num_match.group(1) if num_match else None
+
             # --- BUSCA DE ÍNDICES ---
             idx_alternativas = []
-            idx_gabarito = -1
+            idx_gabarito_local = -1
             categoria = "Múltipla Escolha"
             
             for i, linha in enumerate(linhas):
@@ -40,29 +54,32 @@ def extrair_dados_questoes(docx_file):
                     idx_alternativas.append(i)
                     categoria = "Certo/Errado"
                 if "Gabarito:" in linha:
-                    idx_gabarito = i
+                    idx_gabarito_local = i
 
-            if not idx_alternativas or idx_gabarito == -1: continue
+            if not idx_alternativas: continue
 
-            # --- ENUNCIADO E GABARITO ---
+            # --- ENUNCIADO ---
             enunciado = "\n".join(linhas[2:idx_alternativas[0]]).strip()
-            match_gab = re.search(r'Gabarito:\s*([A-H]|Certo|Errado|C|E)', linhas[idx_gabarito], re.IGNORECASE)
-            letra_correta = match_gab.group(1).upper() if match_gab else ""
+
+            # --- DEFINIÇÃO DO GABARITO (Local ou do Dicionário Final) ---
+            letra_correta = ""
+            if idx_gabarito_local != -1:
+                match_gab = re.search(r'Gabarito:\s*([A-H]|Certo|Errado|C|E)', linhas[idx_gabarito_local], re.IGNORECASE)
+                letra_correta = match_gab.group(1).upper() if match_gab else ""
+            elif num_q in dict_gabaritos:
+                letra_correta = dict_gabaritos[num_q]
 
             # --- ALTERNATIVAS ---
             alts_extraidas = []
+            fim_bloco = idx_gabarito_local if idx_gabarito_local != -1 else len(linhas)
             for i in range(len(idx_alternativas)):
                 inicio = idx_alternativas[i]
-                fim = idx_alternativas[i+1] if i+1 < len(idx_alternativas) else idx_gabarito
+                fim = idx_alternativas[i+1] if i+1 < len(idx_alternativas) else fim_bloco
                 alts_extraidas.append("\n".join(linhas[inicio:fim]).strip())
 
-            # --- MONTAGEM DO DICIONÁRIO (ORDEM RÍGIDA) ---
-            row = {
-                "Enunciado": enunciado,
-                "Categoria": categoria
-            }
+            # --- MONTAGEM DA LINHA ---
+            row = {"Enunciado": enunciado, "Categoria": categoria}
             
-            # Gerar colunas de Alternativa 1 até 8 e suas respectivas correções
             for i in range(1, 9):
                 texto_alt = alts_extraidas[i-1] if i <= len(alts_extraidas) else ""
                 check = ""
@@ -72,17 +89,16 @@ def extrair_dados_questoes(docx_file):
                        (texto_alt == "Certo" and letra_correta in ["C", "CERTO"]) or \
                        (texto_alt == "Errado" and letra_correta in ["E", "ERRADO"]):
                         check = "Sim"
-                
                 row[f"Alternativa {i}"] = texto_alt
                 row[f"Alternativa {i} Correta"] = check
 
-            # Metadados solicitados
             row.update({
                 "Metadado 1": "Banca", "Valor 1": banca,
                 "Metadado 2": "Órgão", "Valor 2": orgao,
-                "Metadado 3": "Cargo", "Valor 3": ano,
-                "Metadado 4": "Ano", "Valor 4": disciplina,
-                "Metadado 5": "Disciplina", "Valor 5": assunto
+                "Metadado 3": "Cargo", "Valor 3": cargo,
+                "Metadado 4": "Ano", "Valor 4": ano,
+                "Metadado 5": "Disciplina", "Valor 5": disciplina,
+                "Metadado 6": "Assunto", "Valor 6": assunto
             })
             questoes.append(row)
             
@@ -93,14 +109,13 @@ def extrair_dados_questoes(docx_file):
 
 # --- Interface ---
 st.set_page_config(page_title="Extrator Auditoria", layout="wide")
-st.title("🏗️ Extrator de Questões - Formato CSV Padrão")
+st.title("🏗️ Extrator de Questões - Template Final")
 
 arquivo = st.file_uploader("Suba o arquivo .docx", type=["docx"])
 
 if arquivo:
     df = extrair_dados_questoes(arquivo)
     if not df.empty:
-        # LISTA RÍGIDA DE COLUNAS CONFORME SOLICITADO
         colunas_finais = [
             "Enunciado", "Categoria",
             "Alternativa 1", "Alternativa 1 Correta", "Alternativa 2", "Alternativa 2 Correta",
@@ -108,16 +123,18 @@ if arquivo:
             "Alternativa 5", "Alternativa 5 Correta", "Alternativa 6", "Alternativa 6 Correta",
             "Alternativa 7", "Alternativa 7 Correta", "Alternativa 8", "Alternativa 8 Correta",
             "Metadado 1", "Valor 1", "Metadado 2", "Valor 2", "Metadado 3", "Valor 3", 
-            "Metadado 4", "Valor 4", "Metadado 5", "Valor 5"
+            "Metadado 4", "Valor 4", "Metadado 5", "Valor 5", "Metadado 6", "Valor 6"
         ]
         
-        # Garante que o DataFrame tenha todas as colunas, mesmo que vazias
         for col in colunas_finais:
-            if col not in df.columns:
-                df[col] = ""
+            if col not in df.columns: df[col] = ""
         
         df = df[colunas_finais]
+        st.success(f"{len(df)} questões processadas!")
+        st.dataframe(df)
         
+        csv = df.to_csv(index=False, sep=";", encoding='utf-8-sig', quoting=1)
+        st.download_button("📥 Baixar CSV para Excel", csv, "questoes_final.csv", "text/csv")
         st.success(f"{len(df)} questões processadas!")
         st.dataframe(df)
         
