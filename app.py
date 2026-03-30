@@ -135,9 +135,3 @@ if arquivo:
         
         csv = df.to_csv(index=False, sep=";", encoding='utf-8-sig', quoting=1)
         st.download_button("📥 Baixar CSV para Excel", csv, "questoes_final.csv", "text/csv")
-        st.success(f"{len(df)} questões processadas!")
-        st.dataframe(df)
-        
-        # Exportação configurada para Excel Brasileiro (sep=";")
-        csv = df.to_csv(index=False, sep=";", encoding='utf-8-sig', quoting=1)
-        st.download_button("📥 Baixar CSV para Excel", csv, "questoes_auditoria.csv", "text/csv")
