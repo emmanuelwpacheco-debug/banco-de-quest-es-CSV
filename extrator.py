@@ -1,5 +1,5 @@
 import pandas as pd
-from docx import Document
+from extrator import extrair_dados_questoes
 import re
 import io
 
