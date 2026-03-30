@@ -9,7 +9,6 @@ def extrair_dados_questoes(docx_file):
         paragrafos = [p.text for p in doc.paragraphs]
         conteudo = "\n".join(paragrafos)
         
-        # Divisão por link do TecConcursos
         blocos = re.split(r'(?:https?://)?www\.tecconcursos\.com\.br/questoes/\d+', conteudo)
         
         questoes = []
@@ -24,7 +23,6 @@ def extrair_dados_questoes(docx_file):
             cargo = banca_cargo[1] if len(banca_cargo) > 1 else ""
             orgao = meta_topo[1] if len(meta_topo) > 1 else ""
             ano = meta_topo[-1] if len(meta_topo) > 1 else ""
-
             meta_assunto = linhas[1].split(' - ')
             disciplina = meta_assunto[0] if len(meta_assunto) > 0 else ""
             assunto = meta_assunto[1] if len(meta_assunto) > 1 else ""
@@ -32,27 +30,23 @@ def extrair_dados_questoes(docx_file):
             # --- BUSCA DE ÍNDICES ---
             idx_alternativas = []
             idx_gabarito = -1
-            categoria = "Múltipla Escolha" # Padrão
+            categoria = "Múltipla Escolha"
             
             for i, linha in enumerate(linhas):
                 l_strip = linha.strip()
-                # Detecta alternativas
                 if re.match(r'^[a-h]\)\s+', l_strip.lower()):
                     idx_alternativas.append(i)
                 elif l_strip in ["Certo", "Errado"]:
                     idx_alternativas.append(i)
-                    categoria = "Certo/Errado" # Se achar essas palavras, muda a categoria
-                
+                    categoria = "Certo/Errado"
                 if "Gabarito:" in linha:
                     idx_gabarito = i
 
             if not idx_alternativas or idx_gabarito == -1: continue
 
-            # --- ENUNCIADO ---
+            # --- ENUNCIADO E GABARITO ---
             enunciado = "\n".join(linhas[2:idx_alternativas[0]]).strip()
-
-            # --- GABARITO ---
-            match_gab = re.search(r'Gabarito:\s*([A-E]|Certo|Errado|C|E)', linhas[idx_gabarito], re.IGNORECASE)
+            match_gab = re.search(r'Gabarito:\s*([A-H]|Certo|Errado|C|E)', linhas[idx_gabarito], re.IGNORECASE)
             letra_correta = match_gab.group(1).upper() if match_gab else ""
 
             # --- ALTERNATIVAS ---
@@ -62,13 +56,14 @@ def extrair_dados_questoes(docx_file):
                 fim = idx_alternativas[i+1] if i+1 < len(idx_alternativas) else idx_gabarito
                 alts_extraidas.append("\n".join(linhas[inicio:fim]).strip())
 
-            # --- MONTAGEM DA LINHA ---
+            # --- MONTAGEM DO DICIONÁRIO (ORDEM RÍGIDA) ---
             row = {
                 "Enunciado": enunciado,
                 "Categoria": categoria
             }
             
-            for i in range(1, 6):
+            # Gerar colunas de Alternativa 1 até 8 e suas respectivas correções
+            for i in range(1, 9):
                 texto_alt = alts_extraidas[i-1] if i <= len(alts_extraidas) else ""
                 check = ""
                 if texto_alt:
@@ -76,14 +71,18 @@ def extrair_dados_questoes(docx_file):
                     if letra_alt == letra_correta or \
                        (texto_alt == "Certo" and letra_correta in ["C", "CERTO"]) or \
                        (texto_alt == "Errado" and letra_correta in ["E", "ERRADO"]):
-                        check = "CORRETA"
+                        check = "Sim"
                 
                 row[f"Alternativa {i}"] = texto_alt
-                row[f"Alt {i} Corr."] = check
+                row[f"Alternativa {i} Correta"] = check
 
+            # Metadados solicitados
             row.update({
-                "M1 (Banca)": banca, "M2 (Órgão)": orgao, "M3 (Cargo)": cargo,
-                "M4 (Ano)": ano, "M5 (Disc.)": disciplina, "M6 (Assunto)": assunto
+                "Metadado 1": "Banca", "Valor 1": banca,
+                "Metadado 2": "Órgão", "Valor 2": orgao,
+                "Metadado 3": "Cargo", "Valor 3": ano,
+                "Metadado 4": "Ano", "Valor 4": disciplina,
+                "Metadado 5": "Disciplina", "Valor 5": assunto
             })
             questoes.append(row)
             
@@ -94,26 +93,34 @@ def extrair_dados_questoes(docx_file):
 
 # --- Interface ---
 st.set_page_config(page_title="Extrator Auditoria", layout="wide")
-st.title("🏗️ Extrator de Questões Rodoviárias")
+st.title("🏗️ Extrator de Questões - Formato CSV Padrão")
 
 arquivo = st.file_uploader("Suba o arquivo .docx", type=["docx"])
 
 if arquivo:
     df = extrair_dados_questoes(arquivo)
     if not df.empty:
-        # ORDEM DAS COLUNAS ATUALIZADA COM 'CATEGORIA'
-        colunas_ordem = [
-            "Enunciado", "Categoria", 
-            "Alternativa 1", "Alt 1 Corr.", "Alternativa 2", "Alt 2 Corr.",
-            "Alternativa 3", "Alt 3 Corr.", "Alternativa 4", "Alt 4 Corr.", "Alternativa 5", "Alt 5 Corr.",
-            "M1 (Banca)", "M2 (Órgão)", "M3 (Cargo)", "M4 (Ano)", "M5 (Disc.)", "M6 (Assunto)"
+        # LISTA RÍGIDA DE COLUNAS CONFORME SOLICITADO
+        colunas_finais = [
+            "Enunciado", "Categoria",
+            "Alternativa 1", "Alternativa 1 Correta", "Alternativa 2", "Alternativa 2 Correta",
+            "Alternativa 3", "Alternativa 3 Correta", "Alternativa 4", "Alternativa 4 Correta",
+            "Alternativa 5", "Alternativa 5 Correta", "Alternativa 6", "Alternativa 6 Correta",
+            "Alternativa 7", "Alternativa 7 Correta", "Alternativa 8", "Alternativa 8 Correta",
+            "Metadado 1", "Valor 1", "Metadado 2", "Valor 2", "Metadado 3", "Valor 3", 
+            "Metadado 4", "Valor 4", "Metadado 5", "Valor 5"
         ]
-        df = df[colunas_ordem]
         
-        st.success(f"{len(df)} questões extraídas com sucesso!")
+        # Garante que o DataFrame tenha todas as colunas, mesmo que vazias
+        for col in colunas_finais:
+            if col not in df.columns:
+                df[col] = ""
+        
+        df = df[colunas_finais]
+        
+        st.success(f"{len(df)} questões processadas!")
         st.dataframe(df)
         
-        # Gerar CSV para Excel (sep por ponto e vírgula e aspas em tudo)
+        # Exportação configurada para Excel Brasileiro (sep=";")
         csv = df.to_csv(index=False, sep=";", encoding='utf-8-sig', quoting=1)
-        
-        st.download_button("📥 Baixar CSV para Excel", csv, "questoes_com_categoria.csv", "text/csv")
+        st.download_button("📥 Baixar CSV para Excel", csv, "questoes_auditoria.csv", "text/csv")
