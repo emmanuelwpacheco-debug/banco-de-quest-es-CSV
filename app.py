@@ -3,16 +3,17 @@ import pandas as pd
 from docx import Document
 import re
 
-def extrair_dados_questoes(docx_file):
+def extrair_dados_questoes(docx_file, nome_caderno):
     try:
         doc = Document(docx_file)
         paragrafos = [p.text for p in doc.paragraphs]
         conteudo = "\n".join(paragrafos)
         
-        # 1. MAPEAMENTO DE GABARITOS (Caso estejam no fim do doc)
+        # 1. MAPEAMENTO DE GABARITOS (Fim do documento)
         dict_gabaritos = {}
         if "Gabarito" in conteudo:
-            parte_final = conteudo.split("Gabarito")[-1]
+            partes = conteudo.split("Gabarito")
+            parte_final = partes[-1]
             matches_gab = re.findall(r'(\d+)\s*\)\s*([\w]+)', parte_final)
             for num, resp in matches_gab:
                 dict_gabaritos[num] = resp.strip().upper()
@@ -37,22 +38,17 @@ def extrair_dados_questoes(docx_file):
             disciplina = meta_assunto[0] if len(meta_assunto) > 0 else ""
             assunto = meta_assunto[1] if len(meta_assunto) > 1 else ""
 
-            # Identificar número da questão para o dicionário de gabaritos
             num_match = re.search(r'^(\d+)\)', "\n".join(linhas[:5]))
             num_q = num_match.group(1) if num_match else None
 
             # --- BUSCA DE ÍNDICES ---
             idx_alternativas = []
             idx_gabarito_local = -1
-            categoria = "Múltipla Escolha"
             
             for i, linha in enumerate(linhas):
                 l_strip = linha.strip()
-                if re.match(r'^[a-h]\)\s+', l_strip.lower()):
+                if re.match(r'^[a-h]\)\s+', l_strip.lower()) or l_strip in ["Certo", "Errado"]:
                     idx_alternativas.append(i)
-                elif l_strip in ["Certo", "Errado"]:
-                    idx_alternativas.append(i)
-                    categoria = "Certo/Errado"
                 if "Gabarito:" in linha:
                     idx_gabarito_local = i
 
@@ -61,7 +57,7 @@ def extrair_dados_questoes(docx_file):
             # --- ENUNCIADO ---
             enunciado = "\n".join(linhas[2:idx_alternativas[0]]).strip()
 
-            # --- DEFINIÇÃO DO GABARITO (Local ou do Dicionário Final) ---
+            # --- GABARITO ---
             letra_correta = ""
             if idx_gabarito_local != -1:
                 match_gab = re.search(r'Gabarito:\s*([A-H]|Certo|Errado|C|E)', linhas[idx_gabarito_local], re.IGNORECASE)
@@ -78,7 +74,8 @@ def extrair_dados_questoes(docx_file):
                 alts_extraidas.append("\n".join(linhas[inicio:fim]).strip())
 
             # --- MONTAGEM DA LINHA ---
-            row = {"Enunciado": enunciado, "Categoria": categoria}
+            # Aqui a Categoria recebe o nome que você digitar na tela
+            row = {"Enunciado": enunciado, "Categoria": nome_caderno}
             
             for i in range(1, 9):
                 texto_alt = alts_extraidas[i-1] if i <= len(alts_extraidas) else ""
@@ -111,27 +108,34 @@ def extrair_dados_questoes(docx_file):
 st.set_page_config(page_title="Extrator Auditoria", layout="wide")
 st.title("🏗️ Extrator de Questões - Template Final")
 
+# Solicitação do nome do caderno (Coluna Categoria)
+nome_caderno = st.text_input("📝 Digite o nome para este Caderno de Questões:", placeholder="Ex: Auditoria Rodoviária - Semana 02")
+
 arquivo = st.file_uploader("Suba o arquivo .docx", type=["docx"])
 
 if arquivo:
-    df = extrair_dados_questoes(arquivo)
-    if not df.empty:
-        colunas_finais = [
-            "Enunciado", "Categoria",
-            "Alternativa 1", "Alternativa 1 Correta", "Alternativa 2", "Alternativa 2 Correta",
-            "Alternativa 3", "Alternativa 3 Correta", "Alternativa 4", "Alternativa 4 Correta",
-            "Alternativa 5", "Alternativa 5 Correta", "Alternativa 6", "Alternativa 6 Correta",
-            "Alternativa 7", "Alternativa 7 Correta", "Alternativa 8", "Alternativa 8 Correta",
-            "Metadado 1", "Valor 1", "Metadado 2", "Valor 2", "Metadado 3", "Valor 3", 
-            "Metadado 4", "Valor 4", "Metadado 5", "Valor 5", "Metadado 6", "Valor 6"
-        ]
-        
-        for col in colunas_finais:
-            if col not in df.columns: df[col] = ""
-        
-        df = df[colunas_finais]
-        st.success(f"{len(df)} questões processadas!")
-        st.dataframe(df)
-        
-        csv = df.to_csv(index=False, sep=";", encoding='utf-8-sig', quoting=1)
-        st.download_button("📥 Baixar CSV para Excel", csv, "questoes_final.csv", "text/csv")
+    if not nome_caderno:
+        st.warning("⚠️ Por favor, dê um nome ao caderno no campo acima para prosseguir.")
+    else:
+        df = extrair_dados_questoes(arquivo, nome_caderno)
+        if not df.empty:
+            colunas_finais = [
+                "Enunciado", "Categoria",
+                "Alternativa 1", "Alternativa 1 Correta", "Alternativa 2", "Alternativa 2 Correta",
+                "Alternativa 3", "Alternativa 3 Correta", "Alternativa 4", "Alternativa 4 Correta",
+                "Alternativa 5", "Alternativa 5 Correta", "Alternativa 6", "Alternativa 6 Correta",
+                "Alternativa 7", "Alternativa 7 Correta", "Alternativa 8", "Alternativa 8 Correta",
+                "Metadado 1", "Valor 1", "Metadado 2", "Valor 2", "Metadado 3", "Valor 3", 
+                "Metadado 4", "Valor 4", "Metadado 5", "Valor 5", "Metadado 6", "Valor 6"
+            ]
+            
+            for col in colunas_finais:
+                if col not in df.columns: df[col] = ""
+            
+            df = df[colunas_finais]
+            st.success(f"✅ {len(df)} questões processadas no caderno '{nome_caderno}'!")
+            st.dataframe(df)
+            
+            csv = df.to_csv(index=False, sep=";", encoding='utf-8-sig', quoting=1)
+            st.download_button("📥 Baixar CSV para Excel", csv, f"caderno_{nome_caderno.replace(' ', '_')}.csv", "text/csv")
+            
